@@ -39,8 +39,9 @@ const getJsSandboxRuntime = (collection: Record<string, unknown>): string => {
     return 'nodevm';
   }
 
-  // default runtime is `quickjs`
-  return 'quickjs';
+  /** QuickJS's wasm sandbox can't be esbuild-bundled (its ESM loader needs `import.meta.url`), so it
+   *  fails to init and every script silently throws; node-vm bundles cleanly. */
+  return 'nodevm';
 };
 
 const promisifyStream = async (stream: Readable): Promise<Buffer> => {
@@ -1143,6 +1144,9 @@ const registerNetworkIpc = (): void => {
         size: result.size,
         duration: result.duration,
         timeline: result.timeline,
+        // Interpolated URL actually sent (executeRequest resolves {{vars}} in place). Used as the
+        // <base href> for HTML previews so relative assets resolve; requestSent.url is still raw.
+        requestUrl: scriptRequest.url,
         error: result.error
       };
     } catch (error) {

@@ -1,6 +1,7 @@
 
 import { ScriptRuntime, VarsRuntime, TestRuntime, AssertRuntime, ScriptResult, TestResult, VarsResult } from '@usebruno/js';
 import get from 'lodash/get';
+import isEqual from 'lodash/isEqual';
 import { sendToWebview } from '../ipc/handlers';
 import logsStore, { LogLevel } from '../store/logs';
 
@@ -59,6 +60,36 @@ const createConsoleLogHandler = (collectionUid: string, requestUid: string) => {
   };
 };
 
+/** Broadcast a script's variable changes on their webview channels: env + runtime vars for
+ *  in-session state, environment vars for the disk write (persist by default, only when the script
+ *  actually changed one), and global env vars. `envVarsBefore` is the pre-script snapshot used to
+ *  skip needless environment-file writes. */
+const emitScriptVariableUpdates = (
+  result: { envVariables?: Record<string, unknown>; runtimeVariables?: unknown; globalEnvironmentVariables?: unknown },
+  context: ScriptContext,
+  envVarsBefore?: Record<string, unknown>
+): void => {
+  sendToWebview('main:script-environment-update', {
+    envVariables: result.envVariables,
+    runtimeVariables: result.runtimeVariables,
+    requestUid: context.requestUid,
+    collectionUid: context.collectionUid
+  });
+
+  if (result.envVariables && !isEqual(result.envVariables, envVarsBefore)) {
+    sendToWebview('main:persistent-env-variables-update', {
+      persistentEnvVariables: result.envVariables,
+      collectionUid: context.collectionUid
+    });
+  }
+
+  if (result.globalEnvironmentVariables) {
+    sendToWebview('main:global-environment-variables-update', {
+      globalEnvironmentVariables: result.globalEnvironmentVariables
+    });
+  }
+};
+
 export const runPreRequestScript = async (
   request: unknown,
   context: ScriptContext
@@ -76,6 +107,8 @@ export const runPreRequestScript = async (
 
     const onConsoleLog = createConsoleLogHandler(context.collectionUid, context.requestUid);
 
+    // The runtime mutates envVars in place; snapshot first to detect script-made env changes.
+    const envVarsBefore = { ...context.envVars };
     const result = await scriptRuntime.runRequestScript(
       decomment(script),
       request,
@@ -91,19 +124,7 @@ export const runPreRequestScript = async (
       context.collectionName
     );
 
-    sendToWebview('main:script-environment-update', {
-      envVariables: result.envVariables,
-      runtimeVariables: result.runtimeVariables,
-      persistentEnvVariables: result.persistentEnvVariables,
-      requestUid: context.requestUid,
-      collectionUid: context.collectionUid
-    });
-
-    if (result.globalEnvironmentVariables) {
-      sendToWebview('main:global-environment-variables-update', {
-        globalEnvironmentVariables: result.globalEnvironmentVariables
-      });
-    }
+    emitScriptVariableUpdates(result, context, envVarsBefore);
 
     const preReqTestResults = (result as any).results;
     if (preReqTestResults && preReqTestResults.length > 0) {
@@ -149,6 +170,7 @@ export const runPostResponseVars = (
       runtime: context.scriptingConfig?.runtime
     });
 
+    const envVarsBefore = { ...context.envVars };
     const result = varsRuntime.runPostResponseVars(
       postResponseVars,
       request,
@@ -160,19 +182,7 @@ export const runPostResponseVars = (
     );
 
     if (result) {
-      sendToWebview('main:script-environment-update', {
-        envVariables: result.envVariables,
-        runtimeVariables: result.runtimeVariables,
-        persistentEnvVariables: result.persistentEnvVariables,
-        requestUid: context.requestUid,
-        collectionUid: context.collectionUid
-      });
-
-      if (result.globalEnvironmentVariables) {
-        sendToWebview('main:global-environment-variables-update', {
-          globalEnvironmentVariables: result.globalEnvironmentVariables
-        });
-      }
+      emitScriptVariableUpdates(result, context, envVarsBefore);
 
       if (result.error) {
         sendToWebview('main:display-error', { error: result.error });
@@ -205,6 +215,7 @@ export const runPostResponseScript = async (
 
     const onConsoleLog = createConsoleLogHandler(context.collectionUid, context.requestUid);
 
+    const envVarsBefore = { ...context.envVars };
     const result = await scriptRuntime.runResponseScript(
       decomment(script),
       request,
@@ -221,19 +232,7 @@ export const runPostResponseScript = async (
       context.collectionName
     );
 
-    sendToWebview('main:script-environment-update', {
-      envVariables: result.envVariables,
-      runtimeVariables: result.runtimeVariables,
-      persistentEnvVariables: result.persistentEnvVariables,
-      requestUid: context.requestUid,
-      collectionUid: context.collectionUid
-    });
-
-    if (result.globalEnvironmentVariables) {
-      sendToWebview('main:global-environment-variables-update', {
-        globalEnvironmentVariables: result.globalEnvironmentVariables
-      });
-    }
+    emitScriptVariableUpdates(result, context, envVarsBefore);
 
     const postResTestResults = (result as any).results;
     if (postResTestResults && postResTestResults.length > 0) {

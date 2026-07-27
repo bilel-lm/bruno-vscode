@@ -1985,12 +1985,42 @@ export const collectionsSlice = createSlice({
     scriptEnvironmentUpdateEvent: (state, action: PayloadAction<ScriptEnvironmentUpdateEventPayload>) => {
       const { collectionUid, envVariables, runtimeVariables } = action.payload;
       const collection = findCollectionByUid(state.collections, collectionUid);
-      if (collection) {
+      if (!collection) {
+        return;
+      }
+
+      if (runtimeVariables) {
         collection.runtimeVariables = runtimeVariables;
-        if (collection.activeEnvironmentUid && envVariables) {
-          const env = findEnvironmentInCollection(collection, collection.activeEnvironmentUid);
-          if (env) {
-          }
+      }
+
+      /** Apply script-set env vars to the active environment for in-session use (visible in the UI,
+       *  readable via getEnvVar); mergeAndPersistEnvironment writes the same result to disk.
+       *  `envVariables` is the full enabled set after the script ran, so a var absent from it was
+       *  deleted (bru.deleteEnvVar) and is dropped; disabled vars are preserved. */
+      if (envVariables && collection.activeEnvironmentUid) {
+        const environment = findEnvironmentInCollection(collection, collection.activeEnvironmentUid);
+        if (environment && Array.isArray(environment.variables)) {
+          Object.entries(envVariables).forEach(([name, value]) => {
+            if (name === '__name__') {
+              return;
+            }
+            const existing = environment.variables.find((v) => v.name === name && v.enabled);
+            if (existing) {
+              existing.value = value as typeof existing.value;
+            } else {
+              environment.variables.push({
+                uid: uuid(),
+                name,
+                value: value as never,
+                type: 'text',
+                enabled: true,
+                secret: false
+              });
+            }
+          });
+          environment.variables = environment.variables.filter(
+            (v) => !v.enabled || Object.prototype.hasOwnProperty.call(envVariables, v.name)
+          );
         }
       }
     },
