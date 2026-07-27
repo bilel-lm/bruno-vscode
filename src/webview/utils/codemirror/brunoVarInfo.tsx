@@ -265,8 +265,8 @@ export const renderVarInfo = (token: any, options: any) => {
     }
   }
 
-  // Check if variable is read-only (process.env, runtime, dynamic/faker, oauth2, path, and undefined variables cannot be edited)
-  const isReadOnly = scopeInfo.type === 'process.env' || scopeInfo.type === 'runtime' || scopeInfo.type === 'dynamic' || scopeInfo.type === 'oauth2' || scopeInfo.type === 'path' || scopeInfo.type === 'undefined';
+  // Check if variable is read-only (process.env, runtime, dynamic/faker, oauth2, and undefined variables cannot be edited)
+  const isReadOnly = scopeInfo.type === 'process.env' || scopeInfo.type === 'runtime' || scopeInfo.type === 'dynamic' || scopeInfo.type === 'oauth2' || scopeInfo.type === 'undefined';
 
   const rawValue = scopeInfo.value || '';
 
@@ -565,11 +565,6 @@ export const renderVarInfo = (token: any, options: any) => {
       const readOnlyNote = document.createElement('div');
       readOnlyNote.className = 'var-readonly-note';
       readOnlyNote.textContent = 'read-only';
-      into.appendChild(readOnlyNote);
-    } else if (scopeInfo.type === 'path') {
-      const readOnlyNote = document.createElement('div');
-      readOnlyNote.className = 'var-readonly-note';
-      readOnlyNote.textContent = 'Edit in Params tab';
       into.appendChild(readOnlyNote);
     } else if (scopeInfo.type === 'undefined') {
       const readOnlyNote = document.createElement('div');
