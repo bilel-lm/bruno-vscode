@@ -90,13 +90,14 @@ export async function openTransientRequestPanel(
   });
 
   panel.onDidDispose(() => {
+    stateManager.broadcast('main:transient-request-closed', { collectionUid, itemUid });
+
     clearActiveItemFromSidebar(itemUid);
     if (savedPanels.has(itemUid)) {
       savedPanels.delete(itemUid);
       stateManager.removeWebview(panel.webview);
       transientPanels.delete(itemUid);
       transientItems.delete(itemUid);
-      stateManager.broadcast('main:transient-request-closed', { collectionUid, itemUid });
       return;
     }
 
@@ -106,7 +107,6 @@ export async function openTransientRequestPanel(
       stateManager.removeWebview(panel.webview);
       transientPanels.delete(itemUid);
       transientItems.delete(itemUid);
-      stateManager.broadcast('main:transient-request-closed', { collectionUid, itemUid });
     }, GRACE_MS);
 
     vscode.window.showInformationMessage(
@@ -151,7 +151,8 @@ export async function openTransientRequestPanel(
 
     const item = transientItems.get(itemUid);
     if (item) {
-      stateManager.sendTo(panel.webview, 'main:add-transient-request', {
+      // Broadcast so the sidebar store also tracks the transient request.
+      stateManager.broadcast('main:add-transient-request', {
         collectionUid,
         item
       });

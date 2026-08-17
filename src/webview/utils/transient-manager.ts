@@ -10,6 +10,7 @@
  */
 
 import { uuid } from 'utils/common/index';
+import { flattenItems, isItemTransientRequest } from 'utils/collections/index';
 
 interface TransientItem {
   uid: string;
@@ -28,17 +29,17 @@ interface CollectionInfo {
   uid: string;
   pathname: string;
   format?: string; // 'bru' or 'yml'
+  items?: any[]; // saved requests + open transients
 }
 
-// Track the next number for auto-generated names per collection
-const counters: Record<string, number> = {};
-
-function getNextName(collectionUid: string): string {
-  if (!counters[collectionUid]) {
-    counters[collectionUid] = 0;
-  }
-  counters[collectionUid]++;
-  return `Untitled ${counters[collectionUid]}`;
+function getNextName(collection: CollectionInfo): string {
+  const items = flattenItems((collection?.items ?? []) as any);
+  const maxNumber = items.reduce((max: number, item: any) => {
+    if (!isItemTransientRequest(item)) return max;
+    const n = Number(item.name?.match(/^Untitled (\d+)$/)?.[1]);
+    return n > max ? n : max;
+  }, 0);
+  return `Untitled ${maxNumber + 1}`;
 }
 
 function getFileExtension(format?: string): string {
@@ -51,7 +52,7 @@ function buildTransientPath(collectionPathname: string, filename: string): strin
 }
 
 function generateItemMeta(collection: CollectionInfo): { name: string; filename: string; pathname: string } {
-  const name = getNextName(collection.uid);
+  const name = getNextName(collection);
   const ext = getFileExtension(collection.format);
   const filename = `${name}.${ext}`;
   const pathname = buildTransientPath(collection.pathname, filename);
@@ -174,10 +175,6 @@ const transientManager = {
       },
       settings: { timeout: 0, keepAliveInterval: 0 }
     };
-  },
-
-  resetCounter(collectionUid: string): void {
-    delete counters[collectionUid];
   }
 };
 

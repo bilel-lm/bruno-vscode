@@ -1582,7 +1582,9 @@ export const collectionsSlice = createSlice({
       const collection = findCollectionByUid(state.collections, collectionUid);
       if (collection) {
         collection.items = collection.items || [];
-        collection.items.push(item);
+        if (!collection.items.some((i: any) => i.uid === item.uid)) {
+          collection.items.push(item);
+        }
       }
     },
 
