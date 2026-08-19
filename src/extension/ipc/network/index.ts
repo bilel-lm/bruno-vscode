@@ -19,6 +19,7 @@ import path from 'path';
 import { parseRequest } from '../../utils/parse';
 import { registerOAuth2Handlers, applyOAuth2ToRequest } from './oauth2-handlers';
 import { runPreRequestScript, runPostResponseVars, runPostResponseScript, runTests, runAssertions } from '../../utils/script-runner';
+import type { ScriptErrorContext, ScriptMetadata } from '@bruno-types';
 import { v4 as uuidv4 } from 'uuid';
 import { cloneDeep, get, filter, forOwn } from 'lodash';
 import { Readable } from 'stream';
@@ -98,6 +99,8 @@ const parseDataFromResponse = (rawBuffer: Buffer, contentType: string): { data: 
 
 interface BrunoRequest {
   uid?: string;
+  /** The sandbox names the compiled script after this, so stack frames resolve. */
+  pathname?: string;
   url: string;
   method: string;
   headers?: Array<{ name: string; value: string; enabled?: boolean }> | Record<string, string>;
@@ -131,11 +134,14 @@ interface BrunoRequest {
   script?: {
     req?: string;
     res?: string;
+    reqMetadata?: ScriptMetadata | null;
+    resMetadata?: ScriptMetadata | null;
   };
   tests?: string;
+  testsMetadata?: ScriptMetadata | null;
   vars?: {
-    req?: Array<{ name: string; value: string; enabled?: boolean }>;
-    res?: Array<{ name: string; value: string; enabled?: boolean }>;
+    req?: Array<{ name: string; value: unknown; enabled?: boolean }>;
+    res?: Array<{ name: string; value: unknown; enabled?: boolean }>;
   };
   assertions?: Array<{ name: string; value: string; enabled?: boolean; uid?: string }>;
   timeout?: number;
@@ -152,9 +158,9 @@ interface BrunoRequest {
   // Additional properties needed by @usebruno/js ScriptRuntime
   name?: string;
   tags?: string[];
-  collectionVariables?: Record<string, string>;
-  folderVariables?: Record<string, string>;
-  requestVariables?: Record<string, string>;
+  collectionVariables?: Record<string, unknown>;
+  folderVariables?: Record<string, unknown>;
+  requestVariables?: Record<string, unknown>;
   globalEnvironmentVariables?: Record<string, unknown>;
   promptVariables?: Record<string, unknown>;
 }
@@ -166,13 +172,13 @@ interface RequestContext {
   collectionPath: string;
   itemUid: string;
   itemPathname: string;
-  envVars?: Record<string, string>;
-  collectionVariables?: Record<string, string>;
-  folderVariables?: Record<string, string>;
-  requestVariables?: Record<string, string>;
+  envVars?: Record<string, unknown>;
+  collectionVariables?: Record<string, unknown>;
+  folderVariables?: Record<string, unknown>;
+  requestVariables?: Record<string, unknown>;
   runtimeVariables?: Record<string, string>;
   processEnvVars?: Record<string, string>;
-  globalEnvironmentVariables?: Record<string, string>;
+  globalEnvironmentVariables?: Record<string, unknown>;
 }
 
 interface RequestOptions {
@@ -780,6 +786,7 @@ const prepareItemRequest = (item: unknown, collection: unknown): BrunoRequest =>
 
   return {
     uid: _item.uid as string,
+    pathname: (_item.pathname as string) || '',
     url: (request.url as string) || '',
     method: (request.method as string) || 'GET',
     headers,
@@ -790,6 +797,7 @@ const prepareItemRequest = (item: unknown, collection: unknown): BrunoRequest =>
     auth,
     script,
     tests,
+    testsMetadata: request.testsMetadata as ScriptMetadata | null,
     vars,
     assertions,
     timeout: (settings.timeout === 'inherit' ? undefined : settings.timeout as number) || 0,
@@ -809,6 +817,23 @@ const prepareItemRequest = (item: unknown, collection: unknown): BrunoRequest =>
     globalEnvironmentVariables,
     promptVariables: (_collection.promptVariables || {}) as Record<string, unknown>
   };
+};
+
+/** Sent on success too, with a null message, since the webview keys the card off the last report. */
+const notifyScriptExecution = (
+  channel: 'main:run-request-event' | 'main:run-folder-event',
+  scriptType: 'pre-request' | 'post-response' | 'test',
+  basePayload: Record<string, unknown>,
+  result: { success?: boolean; error?: string; errorContext?: ScriptErrorContext | null }
+): void => {
+  const failed = result.success === false;
+
+  sendToWebview(channel, {
+    type: `${scriptType}-script-execution`,
+    ...basePayload,
+    errorMessage: failed ? (result.error || `An error occurred in ${scriptType.replace('-', ' ')} script`) : null,
+    errorContext: failed ? (result.errorContext ?? null) : null
+  });
 };
 
 const registerNetworkIpc = (): void => {
@@ -1040,16 +1065,7 @@ const registerNetworkIpc = (): void => {
       try {
         const preRequestResult = await runPreRequestScript(scriptRequest, scriptContext);
 
-        if (!preRequestResult.success) {
-          // Pre-request script failed - send error but continue to show the error
-          sendToWebview('main:run-request-event', {
-            type: 'error',
-            itemUid,
-            requestUid,
-            collectionUid,
-            error: `Pre-request script error: ${preRequestResult.error}`
-          });
-        }
+        notifyScriptExecution('main:run-request-event', 'pre-request', { itemUid, requestUid, collectionUid }, preRequestResult);
 
         skipRequest = preRequestResult.skipRequest || false;
 
@@ -1208,6 +1224,9 @@ const registerNetworkIpc = (): void => {
 
       try {
         const postResponseResult = await runPostResponseScript(scriptRequest, response, scriptContext);
+
+        notifyScriptExecution('main:run-request-event', 'post-response', { itemUid, requestUid, collectionUid }, postResponseResult);
+
         if (postResponseResult.runtimeVariables) {
           Object.assign(mutableRuntimeVariables, postResponseResult.runtimeVariables);
           scriptContext.runtimeVariables = mutableRuntimeVariables;
@@ -1223,7 +1242,9 @@ const registerNetworkIpc = (): void => {
       }
 
       try {
-        await runTests(scriptRequest, response, scriptContext);
+        const testResult = await runTests(scriptRequest, response, scriptContext);
+
+        notifyScriptExecution('main:run-request-event', 'test', { itemUid, requestUid, collectionUid }, testResult);
       } catch (testError) {
         console.error('Tests error:', testError);
       }
@@ -2018,10 +2039,13 @@ const registerNetworkIpc = (): void => {
               ...eventData
             });
 
+            notifyScriptExecution('main:run-folder-event', 'pre-request', eventData, preRequestResult);
+
             if (!preRequestResult.success) {
               sendToWebview('main:run-folder-event', {
                 type: 'error',
                 error: `Pre-request script error: ${preRequestResult.error}`,
+                errorSource: 'script',
                 responseReceived: {},
                 ...eventData
               });
@@ -2041,6 +2065,7 @@ const registerNetworkIpc = (): void => {
             sendToWebview('main:run-folder-event', {
               type: 'error',
               error: `Pre-request script error: ${preErr.message}`,
+              errorSource: 'script',
               responseReceived: {},
               ...eventData
             });
@@ -2202,6 +2227,8 @@ const registerNetworkIpc = (): void => {
               ...eventData
             });
 
+            notifyScriptExecution('main:run-folder-event', 'post-response', eventData, postResponseResult);
+
             if (postResponseResult.runtimeVariables) {
               Object.assign(runnerRuntimeVariables, postResponseResult.runtimeVariables);
               scriptContext.runtimeVariables = runnerRuntimeVariables;
@@ -2251,6 +2278,8 @@ const registerNetworkIpc = (): void => {
           try {
             const testResult = await runTests(scriptRequest, response, scriptContext);
             testResults = testResult.results || [];
+
+            notifyScriptExecution('main:run-folder-event', 'test', eventData, testResult);
 
             sendToWebview('main:run-folder-event', {
               type: 'test-results',

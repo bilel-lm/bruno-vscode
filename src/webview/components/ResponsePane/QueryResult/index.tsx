@@ -176,8 +176,6 @@ const QueryResult = ({
   }, [selectedFormat]);
 
   const queryFilterEnabled = useMemo(() => codeMirrorMode.includes('json') && selectedFormat === 'json' && selectedTab === 'editor', [codeMirrorMode, selectedFormat, selectedTab]);
-  const hasScriptError = item.preRequestScriptErrorMessage || item.postResponseScriptErrorMessage;
-
   return (
     <StyledWrapper
       className="w-full h-full relative flex"
@@ -185,7 +183,8 @@ const QueryResult = ({
     >
       {error ? (
         <div>
-          {hasScriptError ? null : (
+          {/* The runner reports a script failure through item.error too, where the card already shows it. */}
+          {item?.errorSource === 'script' ? null : (
             <div className="error" style={{ whiteSpace: 'pre-line' }}>{formatErrorMessage(error)}</div>
           )}
 
