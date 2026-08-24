@@ -9,7 +9,8 @@ import { cookiesStore } from '../../store/cookies';
 import { getCookieStringForUrl, saveCookies } from '../../utils/cookies';
 import { createFormData, formatMultipartData } from '../../utils/form-data';
 import { readFileBody, getSelectedFileBodyEntry, DEFAULT_FILE_BODY_CONTENT_TYPE } from '../../utils/file-body';
-import { getPreferences } from '../../store/preferences';
+import { safeStringifyJSON } from '../../utils/common';
+import { getPreferences, preferencesUtil } from '../../store/preferences';
 import { getProcessEnvVars } from '../../store/process-env';
 import { getCertsAndProxyConfig } from './cert-utils';
 import { getEnvVars, getTreePathFromCollectionToItem, mergeVars, mergeHeaders, mergeScripts, mergeAuth, flattenItems, findItemInCollection, findItemInCollectionByPathname, hydrateRequestWithUuid, Item } from '../../utils/collection';
@@ -264,12 +265,6 @@ const executeRequest = async (
   const timeline: NetworkLogEntry[] = [];
   let requestSent: RequestSent | undefined;
 
-  const addTimelineEvent = (message: string, type: NetworkLogEntry['type'] = 'info') => {
-    timeline.push({ elapsedMs: Date.now() - startTime, type, message });
-  };
-
-  addTimelineEvent('Request started');
-
   const cancelTokenUid = context.cancelTokenUid || uuidv4();
   const existingController = cancelTokens[cancelTokenUid];
   const abortController = existingController || new AbortController();
@@ -278,7 +273,6 @@ const executeRequest = async (
   }
 
   try {
-    addTimelineEvent('Interpolating variables');
     const interpolatedRequest = interpolateVars(request as unknown as Parameters<typeof interpolateVars>[0], {
       globalEnvironmentVariables: context.globalEnvironmentVariables,
       collectionVariables: context.collectionVariables,
@@ -330,7 +324,6 @@ const executeRequest = async (
     // Apply OAuth2 token to request (auto-fetch/refresh if needed)
     const authMode = ((interpolatedRequest as { auth?: { mode?: string } })?.auth)?.mode;
     if (authMode === 'oauth2' || (interpolatedRequest as { oauth2?: unknown }).oauth2) {
-      addTimelineEvent('Applying OAuth2 token');
       await applyOAuth2ToRequest(interpolatedRequest as unknown as Record<string, unknown>, context.collectionUid, {
         envVars: context.envVars,
         runtimeVariables: context.runtimeVariables,
@@ -338,11 +331,9 @@ const executeRequest = async (
       });
     }
 
-    addTimelineEvent('Preparing request');
     const preparedRequest = prepareRequest(interpolatedRequest as unknown as PrepareRequestType);
 
     if (request.body?.mode === 'multipartForm' && request.body.multipartForm) {
-      addTimelineEvent('Preparing multipart form data');
       const enabledFields = request.body.multipartForm.filter(f => f.enabled !== false);
       const multipartFields = enabledFields.map(f => ({
         name: f.name,
@@ -414,12 +405,15 @@ const executeRequest = async (
       } : undefined,
       requestMaxRedirects,
       digestConfig: request.digestConfig,
-      collectionPath: context.collectionPath
+      collectionPath: context.collectionPath,
+      disableCookies: options.disableCookies,
+      timeline
     };
 
     // Note: We add cookies to BOTH preparedRequest (for axios) AND the original request
     // so that tests can see the cookies via req.getHeader('Cookie')
-    const cookieString = getCookieStringForUrl(preparedRequest.url || '');
+    const shouldSendCookies = !options.disableCookies && preferencesUtil.shouldSendCookies();
+    const cookieString = shouldSendCookies ? getCookieStringForUrl(preparedRequest.url || '') : '';
     if (cookieString) {
       const mergeCookies = (existing: string, newCookies: string): string => {
         const parseCookies = (str: string) => str.split(';').reduce((acc: Record<string, string>, cookie: string) => {
@@ -458,7 +452,6 @@ const executeRequest = async (
 
     requestSent = buildRequestSnapshot(preparedRequest);
 
-    addTimelineEvent(`${requestSent.method} ${requestSent.url}`, 'request');
     const axiosInstance = createAxiosInstance(axiosOptions);
 
     preparedRequest.signal = abortController.signal;
@@ -468,13 +461,10 @@ const executeRequest = async (
       response = await axiosInstance.request(preparedRequest);
     } catch (error) {
       if ((error as Error).name === 'AbortError' || (error as Error).name === 'CanceledError') {
-        addTimelineEvent('Request cancelled', 'error');
         throw new Error('Request cancelled');
       }
       throw error;
     }
-
-    addTimelineEvent(`${response.status} ${response.statusText}`, 'response');
 
     const responseHeaders: Record<string, string> = {};
     Object.entries(response.headers).forEach(([key, value]) => {
@@ -493,16 +483,13 @@ const executeRequest = async (
     const { data: parsedData, dataBuffer: dataString } = parseDataFromResponse(rawBuffer, responseContentType);
 
     // Note: Cookies are already saved to the shared cookieJar in the axios interceptor
-    if (!options.disableCookies) {
+    if (!options.disableCookies && preferencesUtil.shouldStoreCookies()) {
       const setCookieHeaders = response.headers['set-cookie'];
       if (setCookieHeaders) {
-        addTimelineEvent('Processing cookies');
         // Persist cookies to VS Code storage
         cookiesStore.saveCookieJar();
       }
     }
-
-    addTimelineEvent('Request completed');
 
     const result: RequestResult = {
       status: response.status,
@@ -521,8 +508,6 @@ const executeRequest = async (
   } catch (error) {
     const axiosError = error as AxiosError;
     const duration = Date.now() - startTime;
-
-    addTimelineEvent('Request failed: ' + (error as Error).message, 'error');
 
     // If we have a response (4xx, 5xx), return it as a valid response
     // This matches bruno-electron behavior - error responses are shown as data, not as errors
@@ -552,6 +537,12 @@ const executeRequest = async (
           errorDataString = '';
           errorRawBuffer = Buffer.alloc(0);
         }
+      }
+
+      // The interceptor logs the status line and headers, but cannot read the body without consuming
+      // the stream, so it lands in the network log here.
+      if (errorRawBuffer.length) {
+        timeline.push({ timestamp: new Date(), type: 'error', message: safeStringifyJSON(errorRawBuffer.toString()) });
       }
 
       // Don't include 'error' property - this is a valid HTTP response with data
