@@ -153,7 +153,27 @@ const QueryParams = ({
           item={item}
         />
       )
-    }
+    },
+    {
+      key: "description",
+      name: "Description",
+      placeholder: "Description",
+      render: ({ 
+        row, 
+        value, 
+        onChange 
+      }: any) => (
+        <MultiLineEditor
+          value={value || ""}
+          theme={storedTheme}
+          onSave={onSave}
+          onChange={(newValue: any) => handlePathParamChange(row.uid, "description", newValue)}
+          onRun={handleRun}
+          collection={collection}
+          item={item}
+        />
+      ),
+    },
   ];
 
   const defaultQueryRow = {
