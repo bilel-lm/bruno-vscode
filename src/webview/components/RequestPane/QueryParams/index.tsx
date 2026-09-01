@@ -101,6 +101,28 @@ const QueryParams = ({
           placeholder={isLastEmptyRow ? 'Value' : ''}
         />
       )
+    },
+    {
+      key: 'description',
+      name: 'Description',
+      placeholder: 'Description',
+      render: ({
+        row,
+        value,
+        onChange,
+        isLastEmptyRow
+      }: any) => (
+        <MultiLineEditor
+          value={value || ''}
+          theme={storedTheme}
+          onSave={onSave}
+          onChange={onChange}
+          onRun={handleRun}
+          collection={collection}
+          item={item}
+          placeholder={isLastEmptyRow ? 'Description' : ''}
+        />
+      )
     }
   ];
 
